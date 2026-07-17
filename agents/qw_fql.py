@@ -66,28 +66,39 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
 
         new_batch_actions = jnp.concatenate([jnp.expand_dims(batch['actions'], 1), bc_actions], axis=1)
         new_batch_observations = jnp.concatenate([jnp.expand_dims(batch['observations'], 1), n_observations], axis=1)
-        q = jax.lax.stop_gradient(self.network.select('critic')(new_batch_observations, actions=new_batch_actions)).min(axis=0)
-        max_q_actions = new_batch_actions[jnp.arange(batch_size), q.argmax(axis=1)]
+        q = jax.lax.stop_gradient(self.network.select('target_critic')(new_batch_observations, actions=new_batch_actions)).min(axis=0)
+        top_k = self.config['qw_top_k']
+        _, top_k_indices = jax.lax.top_k(q, top_k)
+        top_k_actions = new_batch_actions[jnp.arange(batch_size)[:, None], top_k_indices]  # (batch_size, top_k, action_dim)
 
         rng, x_rng, t_rng = jax.random.split(rng, 3)
-        x_0 = jax.random.normal(x_rng, (batch_size, action_dim))
-        x_1 = max_q_actions
-        t = jax.random.uniform(t_rng, (batch_size, 1))
+        x_0 = jax.random.normal(x_rng, (batch_size, top_k, action_dim))
+        x_1 = top_k_actions  # (batch_size, top_k, action_dim)
+        t = jax.random.uniform(t_rng, (batch_size, top_k, 1))
         x_t = (1 - t) * x_0 + t * x_1
         vel = x_1 - x_0
-        pred = self.network.select('actor_qw_flow')(batch['observations'], x_t, t, params=grad_params)
-        qw_flow_loss = jnp.mean((pred - vel) ** 2)
 
-        # Distillation loss.
+        flat_obs = jnp.repeat(batch['observations'], top_k, axis=0)
+        flat_x_t = x_t.reshape(batch_size * top_k, action_dim)
+        flat_t = t.reshape(batch_size * top_k, 1)
+        flat_vel = vel.reshape(batch_size * top_k, action_dim)
+        pred = self.network.select('actor_qw_flow')(flat_obs, flat_x_t, flat_t, params=grad_params)
+        qw_flow_loss = jnp.mean((pred - flat_vel) ** 2)
+
+        # BC Flow Distillation loss.
         rng, noise_rng = jax.random.split(rng)
         noises = jax.random.normal(noise_rng, (batch_size, action_dim))
-        target_flow_actions = self.compute_qw_flow_actions(batch['observations'], noises=noises)
         actor_actions = self.network.select('actor_onestep_flow')(batch['observations'], noises, params=grad_params)
-        distill_loss = jnp.mean((actor_actions - target_flow_actions) ** 2)
+
+        target_bc_flow_actions = self.compute_bc_flow_actions(batch['observations'], noises=noises)
+        target_qw_flow_actions = self.compute_qw_flow_actions(batch['observations'], noises=noises)
+
+        distill_bc_flow_loss = jnp.mean((actor_actions - target_bc_flow_actions) ** 2)
+        distill_qw_flow_loss = jnp.mean((actor_actions - target_qw_flow_actions) ** 2)
 
         # Q loss.
         actor_actions = jnp.clip(actor_actions, -1, 1)
-        qs = self.network.select('critic')(batch['observations'], actions=actor_actions)
+        qs = self.network.select('target_critic')(batch['observations'], actions=actor_actions)
         q = jnp.mean(qs, axis=0)
 
         q_loss = -q.mean()
@@ -96,7 +107,7 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
             q_loss = lam * q_loss
 
         # Total loss.
-        actor_loss = bc_flow_loss + qw_flow_loss + self.config['alpha'] * distill_loss + q_loss
+        actor_loss = bc_flow_loss + qw_flow_loss + self.config['alpha'] * distill_bc_flow_loss + self.config['beta'] * distill_qw_flow_loss + q_loss
 
         # Additional metrics for logging.
         actions = self.sample_actions(batch['observations'], seed=rng)
@@ -106,7 +117,8 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
             'actor_loss': actor_loss,
             'bc_flow_loss': bc_flow_loss,
             'qw_flow_loss': qw_flow_loss,
-            'distill_loss': distill_loss,
+            'distill_bc_flow_loss': distill_bc_flow_loss,
+            'distill_qw_flow_loss': distill_qw_flow_loss,
             'q_loss': q_loss,
             'q': q.mean(),
             'mse': mse,
@@ -311,7 +323,9 @@ def get_config():
             tau=0.005,  # Target network update rate.
             q_agg='mean',  # Aggregation method for target Q values.
             alpha=10.0,  # BC coefficient (need to be tuned for each environment).
+            beta=5.0,  # QW coefficient (need to be tuned for each environment).
             bc_candidates=10,  # Number of BC action candidates.
+            qw_top_k=2,  # Number of top-Q actions to sample from.
             flow_steps=10,  # Number of flow steps.
             normalize_q_loss=False,  # Whether to normalize the Q loss.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
