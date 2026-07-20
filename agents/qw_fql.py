@@ -96,6 +96,8 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
         distill_bc_flow_loss = jnp.mean((actor_actions - target_bc_flow_actions) ** 2)
         distill_qw_flow_loss = jnp.mean((actor_actions - target_qw_flow_actions) ** 2)
 
+        distill_loss = (1.0-self.config['beta']) * distill_bc_flow_loss + self.config['beta'] * distill_qw_flow_loss
+
         # Q loss.
         actor_actions = jnp.clip(actor_actions, -1, 1)
         qs = self.network.select('target_critic')(batch['observations'], actions=actor_actions)
@@ -107,7 +109,7 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
             q_loss = lam * q_loss
 
         # Total loss.
-        actor_loss = bc_flow_loss + qw_flow_loss + self.config['alpha'] * distill_bc_flow_loss + self.config['beta'] * distill_qw_flow_loss + q_loss
+        actor_loss = bc_flow_loss + qw_flow_loss + self.config['alpha'] * distill_loss + q_loss
 
         # Additional metrics for logging.
         actions = self.sample_actions(batch['observations'], seed=rng)
@@ -250,6 +252,7 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
             encoder_module = encoder_modules[config['encoder']]
             encoders['critic'] = encoder_module()
             encoders['actor_bc_flow'] = encoder_module()
+            encoders['actor_qw_flow'] = encoder_module()
             encoders['actor_onestep_flow'] = encoder_module()
 
         # Define networks.
@@ -323,9 +326,9 @@ def get_config():
             tau=0.005,  # Target network update rate.
             q_agg='mean',  # Aggregation method for target Q values.
             alpha=10.0,  # BC coefficient (need to be tuned for each environment).
-            beta=5.0,  # QW coefficient (need to be tuned for each environment).
+            beta=0.5,  # QW coefficient (need to be tuned for each environment).
             bc_candidates=10,  # Number of BC action candidates.
-            qw_top_k=2,  # Number of top-Q actions to sample from.
+            qw_top_k=3,  # Number of top-Q actions to sample from.
             flow_steps=10,  # Number of flow steps.
             normalize_q_loss=False,  # Whether to normalize the Q loss.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).

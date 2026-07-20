@@ -1,6 +1,7 @@
 import os
 
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+os.environ['OGBENCH_DATA_DIR'] = '/mnt/data/user_workspace/zhouhongtu/ogbench_dataset'
 
 import json
 import multiprocessing as mp
@@ -21,8 +22,6 @@ from utils.datasets import Dataset, ReplayBuffer
 from utils.evaluation import evaluate, flatten
 from utils.flax_utils import restore_agent, save_agent
 from utils.log_utils import CsvLogger, get_flag_dict, get_tb_video, setup_tensorboard
-
-os.environ['OGBENCH_DATA_DIR'] = '/mnt/data/user_workspace/zhouhongtu/ogbench_dataset'
 
 FLAGS = flags.FLAGS
 
