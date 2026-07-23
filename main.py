@@ -11,10 +11,6 @@ import sys
 import time
 from datetime import datetime
 
-# Use 'spawn' start method to avoid os.fork() warning with JAX.
-# JAX is multithreaded and fork() copies its thread pool state, which can cause deadlocks.
-# 'spawn' creates a fresh Python interpreter for each child process instead.
-mp.set_start_method('spawn')
 
 import jax
 import numpy as np
