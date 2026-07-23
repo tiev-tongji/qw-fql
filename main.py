@@ -11,6 +11,11 @@ import sys
 import time
 from datetime import datetime
 
+# Use 'spawn' start method to avoid os.fork() warning with JAX.
+# JAX is multithreaded and fork() copies its thread pool state, which can cause deadlocks.
+# 'spawn' creates a fresh Python interpreter for each child process instead.
+mp.set_start_method('spawn')
+
 import jax
 import numpy as np
 from absl import app, flags
@@ -106,11 +111,14 @@ def _train():
     """Core training logic, called after FLAGS are parsed and agent config is set."""
     config = FLAGS.agent
     agent_name = config['agent_name']
+    alpha = config['alpha']
+    tempe = config['qw_temperature']
+    exp_name = f'{agent_name}_{alpha}_{tempe}'
 
     # Set up save directory: logs/env_name/agent_name/time/seed/
     time_str = FLAGS.time_str or datetime.now().strftime('%Y%m%d_%H%M%S')
     FLAGS.save_dir = os.path.join(
-        FLAGS.save_dir, FLAGS.env_name, agent_name, time_str, f'seed{FLAGS.seed}'
+        FLAGS.save_dir, FLAGS.env_name, exp_name, time_str, f'seed{FLAGS.seed}'
     )
     os.makedirs(FLAGS.save_dir, exist_ok=True)
     writer = setup_tensorboard(log_dir=FLAGS.save_dir, config=get_flag_dict())

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-COMMON_FLAGS="--agent=agents/qw_fql.py --agent.bc_candidates=10 --agent.qw_top_k=3 --gpu_ids=0,1,2,3,4,5,6,7 --seeds=0,1,2,3,4,5,6,7"
+COMMON_FLAGS="--agent=agents/d3fql.py --agent.num_ensembles=5 --agent.bc_candidates=10 --agent.critic_lcb_kappa=0.5 --agent.lcb_kappa=0.5 --agent.beta=1.0 --gpu_ids=0,1,2,3,4,5,6,7 --seeds=0,1,2,3,4,5,6,7"
 TOTAL=50
 IDX=0
 
@@ -12,7 +12,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] antmaze-large-navigate-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=antmaze-large-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.q_agg=min --agent.alpha=10 --agent.beta=0.5
+    uv run main.py --env_name=antmaze-large-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=3 --agent.qw_temperature=0.001
 done
 
 # ============================================================
@@ -23,7 +23,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] antmaze-giant-navigate-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=antmaze-giant-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.discount=0.995 --agent.q_agg=min --agent.alpha=10 --agent.beta=0.5
+    uv run main.py --env_name=antmaze-giant-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.discount=0.995 --agent.alpha=10 --agent.qw_temperature=0.01
 done
 
 # ============================================================
@@ -34,7 +34,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] humanoidmaze-medium-navigate-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=humanoidmaze-medium-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.discount=0.995 --agent.alpha=30 --agent.beta=0.5
+    uv run main.py --env_name=humanoidmaze-medium-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.discount=0.995 --agent.alpha=30 --agent.qw_temperature=0.01
 done
 
 # ============================================================
@@ -45,7 +45,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] humanoidmaze-large-navigate-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=humanoidmaze-large-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.discount=0.995 --agent.alpha=30 --agent.beta=0.5
+    uv run main.py --env_name=humanoidmaze-large-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.discount=0.995 --agent.alpha=30 --agent.qw_temperature=0.001
 done
 
 # ============================================================
@@ -56,7 +56,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] antsoccer-arena-navigate-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=antsoccer-arena-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.discount=0.995 --agent.alpha=10 --agent.beta=0.5
+    uv run main.py --env_name=antsoccer-arena-navigate-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.discount=0.995 --agent.alpha=10 --agent.qw_temperature=0.001
 done
 
 # ============================================================
@@ -67,7 +67,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] cube-single-play-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=cube-single-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=300 --agent.beta=0.5
+    uv run main.py --env_name=cube-single-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=300 --agent.qw_temperature=0.01
 done
 
 # ============================================================
@@ -78,7 +78,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] cube-double-play-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=cube-double-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=300 --agent.beta=0.5
+    uv run main.py --env_name=cube-double-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=100 --agent.qw_temperature=0.01
 done
 
 # ============================================================
@@ -89,7 +89,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] scene-play-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=scene-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=300 --agent.beta=0.5
+    uv run main.py --env_name=scene-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=300 --agent.qw_temperature=0.001
 done
 
 # ============================================================
@@ -100,7 +100,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] puzzle-3x3-play-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=puzzle-3x3-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=1000 --agent.beta=0.5
+    uv run main.py --env_name=puzzle-3x3-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=30 --agent.qw_temperature=0.001
 done
 
 # ============================================================
@@ -111,7 +111,7 @@ for TASK in 1 2 3 4 5; do
     echo "=========================================="
     echo "[${IDX}/${TOTAL}] puzzle-4x4-play-singletask-task${TASK}-v0"
     echo "=========================================="
-    uv run main.py --env_name=puzzle-4x4-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=1000 --agent.beta=0.5
+    uv run main.py --env_name=puzzle-4x4-play-singletask-task${TASK}-v0 ${COMMON_FLAGS} --agent.alpha=1000 --agent.qw_temperature=0.001
 done
 
 echo "=========================================="
