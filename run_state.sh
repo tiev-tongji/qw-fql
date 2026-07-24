@@ -1,6 +1,6 @@
 #!/bin/bash
 
-COMMON_FLAGS="--agent=agents/d3fql.py --agent.num_ensembles=5 --agent.bc_candidates=10 --agent.critic_lcb_kappa=0.5 --agent.lcb_kappa=0.5 --agent.beta=1.0 --gpu_ids=0,1,2,3,4,5,6,7 --seeds=0,1,2,3,4,5,6,7"
+COMMON_FLAGS="--agent=agents/d3fql.py --agent.num_ensembles=5 --agent.bc_candidates=10 --agent.critic_lcb_kappa=0.5 --agent.candidate_lcb_kappa=0.5 --gpu_ids=0,1,2,3,4,5,6,7 --seeds=0,1,2,3,4,5,6,7"
 TOTAL=50
 IDX=0
 

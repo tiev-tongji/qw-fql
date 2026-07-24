@@ -59,6 +59,7 @@ std = values.std(axis=0)
 print(f'\nSeeds: {len(all_steps_list)}, Points: {min_len}')
 for i in range(min_len):
     print(f'  step={steps[i]}, mean={mean[i]:.2f} +/- {std[i]:.2f}')
+print(f'  avrg={mean[-3:].mean():.2f} +/- {std[-3:].mean():.2f}')
 
 # ============================================================
 # Plotting

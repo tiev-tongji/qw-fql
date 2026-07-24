@@ -12,8 +12,8 @@ from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.networks import ActorVectorField, Value
 
 
-class QW_FQLAgent(flax.struct.PyTreeNode):
-    """Flow Q-learning (FQL) agent."""
+class DFQAgent(flax.struct.PyTreeNode):
+    """Decoupled Flow Q-learning (DFQ) agent."""
 
     rng: Any
     network: Any
@@ -58,50 +58,44 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
         pred = self.network.select('actor_bc_flow')(batch['observations'], x_t, t, params=grad_params)
         bc_flow_loss = jnp.mean((pred - vel) ** 2)
 
-        # QW flow loss.
-        rng, noise_rng = jax.random.split(rng)
-        noises = jax.random.normal(noise_rng, (batch_size, self.config['bc_candidates'], action_dim))
-        n_observations = jnp.repeat(jnp.expand_dims(batch['observations'], 1), self.config['bc_candidates'], axis=1)
-        bc_actions = self.compute_bc_flow_actions(n_observations, noises=noises)
+        # VA flow loss.
+        rng, bc_noise_rng = jax.random.split(rng)
+        candi_num = self.config['candidate_num']
+        bc_noises = jax.random.normal(bc_noise_rng, (batch_size, candi_num, action_dim))
+        bc_obs = jnp.repeat(batch['observations'][:, None, ...], candi_num, axis=1)
+        bc_actions = self.compute_bc_flow_actions(bc_obs, noises=bc_noises)
 
-        new_batch_actions = jnp.concatenate([jnp.expand_dims(batch['actions'], 1), bc_actions], axis=1)
-        new_batch_observations = jnp.concatenate([jnp.expand_dims(batch['observations'], 1), n_observations], axis=1)
-        q = jax.lax.stop_gradient(self.network.select('target_critic')(new_batch_observations, actions=new_batch_actions)).min(axis=0)
-        top_k = self.config['qw_top_k']
-        _, top_k_indices = jax.lax.top_k(q, top_k)
-        top_k_actions = new_batch_actions[jnp.arange(batch_size)[:, None], top_k_indices]  # (batch_size, top_k, action_dim)
+        candi_obs = jnp.repeat(batch['observations'][:, None, ...], candi_num+1, axis=1)
+        candi_actions = jnp.concatenate([batch['actions'][:, None, ...], bc_actions], axis=1) # B, C+1, A
+        candidate_qs = self.network.select('target_critic')(candi_obs, actions=candi_actions) # E, B, C+1
+        candidate_qs = jax.lax.stop_gradient(candidate_qs.min(axis=0))  # Aggregate ensemble dimension -> B, C+1
 
-        rng, x_rng, t_rng = jax.random.split(rng, 3)
-        x_0 = jax.random.normal(x_rng, (batch_size, top_k, action_dim))
-        x_1 = top_k_actions  # (batch_size, top_k, action_dim)
-        t = jax.random.uniform(t_rng, (batch_size, top_k, 1))
-        x_t = (1 - t) * x_0 + t * x_1
-        vel = x_1 - x_0
+        rng, sample_rng = jax.random.split(rng)
+        candi_indices = jax.random.categorical(sample_rng, candidate_qs / self.config['va_temperature'])  # (B,)
 
-        flat_obs = jnp.repeat(batch['observations'], top_k, axis=0)
-        flat_x_t = x_t.reshape(batch_size * top_k, action_dim)
-        flat_t = t.reshape(batch_size * top_k, 1)
-        flat_vel = vel.reshape(batch_size * top_k, action_dim)
-        pred = self.network.select('actor_qw_flow')(flat_obs, flat_x_t, flat_t, params=grad_params)
-        qw_flow_loss = jnp.mean((pred - flat_vel) ** 2)
+        rng, va_x_rng, va_t_rng = jax.random.split(rng, 3)
+        va_x_0 = jax.random.normal(va_x_rng, (batch_size, action_dim))
+        va_x_1 = jnp.take_along_axis(candi_actions, candi_indices[:, None, None], axis=1).squeeze(1)
+        va_x_1 = jax.lax.stop_gradient(va_x_1)
+        va_t = jax.random.uniform(va_t_rng, (batch_size, 1))
+        va_x_t = (1 - va_t) * va_x_0 + va_t * va_x_1
+        va_vel = va_x_1 - va_x_0
+        
+        va_pred = self.network.select('actor_va_flow')(batch['observations'], va_x_t, va_t, params=grad_params)
+        va_flow_loss = jnp.mean((va_pred - va_vel) ** 2)
 
-        # BC Flow Distillation loss.
+        # Distillation loss.
         rng, noise_rng = jax.random.split(rng)
         noises = jax.random.normal(noise_rng, (batch_size, action_dim))
+        target_flow_actions = self.compute_target_va_flow_actions(batch['observations'], noises=noises)
         actor_actions = self.network.select('actor_onestep_flow')(batch['observations'], noises, params=grad_params)
-
-        target_bc_flow_actions = self.compute_bc_flow_actions(batch['observations'], noises=noises)
-        target_qw_flow_actions = self.compute_qw_flow_actions(batch['observations'], noises=noises)
-
-        distill_bc_flow_loss = jnp.mean((actor_actions - target_bc_flow_actions) ** 2)
-        distill_qw_flow_loss = jnp.mean((actor_actions - target_qw_flow_actions) ** 2)
-
-        distill_loss = (1.0-self.config['beta']) * distill_bc_flow_loss + self.config['beta'] * distill_qw_flow_loss
+        distill_loss = jnp.mean((actor_actions - target_flow_actions) ** 2)
 
         # Q loss.
-        actor_actions = jnp.clip(actor_actions, -1, 1)
-        qs = self.network.select('target_critic')(batch['observations'], actions=actor_actions)
-        q = jnp.mean(qs, axis=0)
+        actor_actions_raw = actor_actions
+        actor_actions = (actor_actions_raw + jax.lax.stop_gradient(jnp.clip(actor_actions_raw,-1,1) - actor_actions_raw))
+        qs = self.network.select('critic')(batch['observations'], actions=actor_actions)
+        q = jnp.min(qs, axis=0)
 
         q_loss = -q.mean()
         if self.config['normalize_q_loss']:
@@ -109,21 +103,22 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
             q_loss = lam * q_loss
 
         # Total loss.
-        actor_loss = bc_flow_loss + qw_flow_loss + self.config['alpha'] * distill_loss + q_loss
+        actor_loss = bc_flow_loss + va_flow_loss + self.config['alpha'] * distill_loss + q_loss
 
         # Additional metrics for logging.
         actions = self.sample_actions(batch['observations'], seed=rng)
         mse = jnp.mean((actions - batch['actions']) ** 2)
+        data_action_rate = jnp.mean((candi_indices == 0).astype(jnp.float32))
 
         return actor_loss, {
             'actor_loss': actor_loss,
             'bc_flow_loss': bc_flow_loss,
-            'qw_flow_loss': qw_flow_loss,
-            'distill_bc_flow_loss': distill_bc_flow_loss,
-            'distill_qw_flow_loss': distill_qw_flow_loss,
+            'va_flow_loss': va_flow_loss,
+            'distill_loss': distill_loss,
             'q_loss': q_loss,
             'q': q.mean(),
             'mse': mse,
+            'data_action_rate': data_action_rate,
         }
 
     @jax.jit
@@ -164,6 +159,7 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
 
         new_network, info = self.network.apply_loss_fn(loss_fn=loss_fn)
         self.target_update(new_network, 'critic')
+        self.target_update(new_network, 'actor_va_flow')
 
         return self.replace(network=new_network, rng=new_rng), info
 
@@ -206,19 +202,19 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
         return actions
 
     @jax.jit
-    def compute_qw_flow_actions(
+    def compute_target_va_flow_actions(
         self,
         observations,
         noises,
     ):
-        """Compute actions from the BC flow model using the Euler method."""
+        """Compute actions from the VA flow model using the Euler method."""
         if self.config['encoder'] is not None:
-            observations = self.network.select('actor_qw_flow_encoder')(observations)
+            observations = self.network.select('target_actor_va_flow_encoder')(observations)
         actions = noises
         # Euler method.
         for i in range(self.config['flow_steps']):
             t = jnp.full((*observations.shape[:-1], 1), i / self.config['flow_steps'])
-            vels = self.network.select('actor_qw_flow')(observations, actions, t, is_encoded=True)
+            vels = self.network.select('target_actor_va_flow')(observations, actions, t, is_encoded=True)
             actions = actions + vels / self.config['flow_steps']
         actions = jnp.clip(actions, -1, 1)
         return actions
@@ -252,7 +248,8 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
             encoder_module = encoder_modules[config['encoder']]
             encoders['critic'] = encoder_module()
             encoders['actor_bc_flow'] = encoder_module()
-            encoders['actor_qw_flow'] = encoder_module()
+            encoders['actor_va_flow'] = encoder_module()
+            encoders['target_actor_va_flow'] = encoder_module()
             encoders['actor_onestep_flow'] = encoder_module()
 
         # Define networks.
@@ -268,11 +265,11 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
             layer_norm=config['actor_layer_norm'],
             encoder=encoders.get('actor_bc_flow'),
         )
-        actor_qw_flow_def = ActorVectorField(
+        actor_va_flow_def = ActorVectorField(
             hidden_dims=config['actor_hidden_dims'],
             action_dim=action_dim,
             layer_norm=config['actor_layer_norm'],
-            encoder=encoders.get('actor_qw_flow'),
+            encoder=encoders.get('actor_va_flow'),
         )
         actor_onestep_flow_def = ActorVectorField(
             hidden_dims=config['actor_hidden_dims'],
@@ -285,15 +282,19 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
             critic=(critic_def, (ex_observations, ex_actions)),
             target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_actions)),
             actor_bc_flow=(actor_bc_flow_def, (ex_observations, ex_actions, ex_times)),
-            actor_qw_flow=(actor_qw_flow_def, (ex_observations, ex_actions, ex_times)),
+            actor_va_flow=(actor_va_flow_def, (ex_observations, ex_actions, ex_times)),
+            target_actor_va_flow=(copy.deepcopy(actor_va_flow_def), (ex_observations, ex_actions, ex_times)),
             actor_onestep_flow=(actor_onestep_flow_def, (ex_observations, ex_actions)),
         )
         if encoders.get('actor_bc_flow') is not None:
             # Add actor_bc_flow_encoder to ModuleDict to make it separately callable.
             network_info['actor_bc_flow_encoder'] = (encoders.get('actor_bc_flow'), (ex_observations,))
-        if encoders.get('actor_bc_flow') is not None:
-            # Add actor_bc_flow_encoder to ModuleDict to make it separately callable.
-            network_info['actor_qw_flow_encoder'] = (encoders.get('actor_qw_flow'), (ex_observations,))
+        if encoders.get('actor_va_flow') is not None:
+            # Add actor_va_flow_encoder to ModuleDict to make it separately callable.
+            network_info['actor_va_flow_encoder'] = (encoders.get('actor_va_flow'), (ex_observations,))
+        if encoders.get('target_actor_va_flow') is not None:
+            # Add target_actor_va_flow_encoder to ModuleDict to make it separately callable.
+            network_info['target_actor_va_flow_encoder'] = (encoders.get('target_actor_va_flow'), (ex_observations,))
         networks = {k: v[0] for k, v in network_info.items()}
         network_args = {k: v[1] for k, v in network_info.items()}
 
@@ -304,6 +305,7 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
 
         params = network.params
         params['modules_target_critic'] = params['modules_critic']
+        params['modules_target_actor_va_flow'] = params['modules_actor_va_flow']
 
         config['ob_dims'] = ob_dims
         config['action_dim'] = action_dim
@@ -313,7 +315,7 @@ class QW_FQLAgent(flax.struct.PyTreeNode):
 def get_config():
     config = ml_collections.ConfigDict(
         dict(
-            agent_name='qw_fql',  # Agent name.
+            agent_name='dfq',  # Agent name.
             ob_dims=ml_collections.config_dict.placeholder(list),  # Observation dimensions (will be set automatically).
             action_dim=ml_collections.config_dict.placeholder(int),  # Action dimension (will be set automatically).
             lr=3e-4,  # Learning rate.
@@ -326,9 +328,8 @@ def get_config():
             tau=0.005,  # Target network update rate.
             q_agg='mean',  # Aggregation method for target Q values.
             alpha=10.0,  # BC coefficient (need to be tuned for each environment).
-            beta=0.5,  # QW coefficient (need to be tuned for each environment).
-            bc_candidates=10,  # Number of BC action candidates.
-            qw_top_k=3,  # Number of top-Q actions to sample from.
+            candidate_num=4,
+            va_temperature=0.5,
             flow_steps=10,  # Number of flow steps.
             normalize_q_loss=False,  # Whether to normalize the Q loss.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).

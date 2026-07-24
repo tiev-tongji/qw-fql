@@ -108,7 +108,7 @@ def _train():
     config = FLAGS.agent
     agent_name = config['agent_name']
     alpha = config['alpha']
-    tempe = config['qw_temperature']
+    tempe = config['va_temperature']
     exp_name = f'{agent_name}_{alpha}_{tempe}'
 
     # Set up save directory: logs/env_name/agent_name/time/seed/
@@ -256,7 +256,7 @@ def _train():
             print(
                 f'{tag} step={i:>7d}/{total_steps} ({progress:5.1f}%) | '
                 f'elapsed={_format_time(elapsed)} | eta={_format_time(eta)} | '
-                f'epoch_time={train_metrics["time/epoch_time"]:.3f}s',
+                f'epoch_time={train_metrics["time/epoch_time"]:.5f}s',
                 flush=True,
             )
 
