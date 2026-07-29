@@ -25,20 +25,26 @@ LOG_DIR="logs/grid_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
 
 # ---------- 公共 agent 参数 ----------
-AGENT_FLAGS="--agent=agents/dfq.py"
+AGENT_FLAGS="--agent=agents/dfq.py --offline_steps=500000"
 
 # ---------- 环境及其专属 discount ----------
 ALL_ENVS=(
-    antmaze-large-navigate-singletask-v0
-    antmaze-giant-navigate-singletask-v0
-    humanoidmaze-medium-navigate-singletask-v0
-    humanoidmaze-large-navigate-singletask-v0
-    antsoccer-arena-navigate-singletask-v0
-    cube-single-play-singletask-v0
-    cube-double-play-singletask-v0
-    scene-play-singletask-v0
-    puzzle-3x3-play-singletask-v0
-    puzzle-4x4-play-singletask-v0
+    antmaze-umaze-v2
+    antmaze-umaze-diverse-v2
+    antmaze-medium-play-v2
+    antmaze-medium-diverse-v2
+    antmaze-large-play-v2
+    antmaze-large-diverse-v2
+    # antmaze-large-navigate-singletask-v0
+    # antmaze-giant-navigate-singletask-v0
+    # humanoidmaze-medium-navigate-singletask-v0
+    # humanoidmaze-large-navigate-singletask-v0
+    # antsoccer-arena-navigate-singletask-v0
+    # cube-single-play-singletask-v0
+    # cube-double-play-singletask-v0
+    # scene-play-singletask-v0
+    # puzzle-3x3-play-singletask-v0
+    # puzzle-4x4-play-singletask-v0
 )
 declare -A DISCOUNT=(
     [antmaze-giant-navigate-singletask-v0]="--agent.discount=0.995"
