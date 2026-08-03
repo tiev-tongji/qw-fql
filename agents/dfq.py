@@ -17,6 +17,7 @@ class DFQAgent(flax.struct.PyTreeNode):
 
     rng: Any
     network: Any
+    alpha: Any
     config: Any = nonpytree_field()
 
     def critic_loss(self, batch, grad_params, rng):
@@ -91,19 +92,68 @@ class DFQAgent(flax.struct.PyTreeNode):
         actor_actions = self.network.select('actor_onestep_flow')(batch['observations'], noises, params=grad_params)
         distill_loss = jnp.mean((actor_actions - target_flow_actions) ** 2)
 
-        # Q loss.
+        # Q loss.  Normalize it to make the policy objective insensitive to the
+        # reward / horizon-dependent scale of Q.  The straight-through clip
+        # keeps the critic input in range while preserving actor gradients.
         actor_actions_raw = actor_actions
-        actor_actions = (actor_actions_raw + jax.lax.stop_gradient(jnp.clip(actor_actions_raw,-1,1) - actor_actions_raw))
-        qs = self.network.select('critic')(batch['observations'], actions=actor_actions)
-        q = jnp.min(qs, axis=0)
 
-        q_loss = -q.mean()
-        if self.config['normalize_q_loss']:
-            lam = jax.lax.stop_gradient(1 / jnp.abs(q).mean())
-            q_loss = lam * q_loss
+        def q_objective(actions):
+            clipped_actions = actions + jax.lax.stop_gradient(
+                jnp.clip(actions, -1, 1) - actions
+            )
+            qs = self.network.select('critic')(batch['observations'], actions=clipped_actions)
+            q = jnp.min(qs, axis=0)
+            q_loss_raw = -q.mean()
+
+            if self.config.get('normalize_q_loss', True):
+                q_scale = jax.lax.stop_gradient(
+                    jnp.maximum(jnp.abs(q).mean(), self.config.get('q_scale_min', 1.0))
+                )
+            else:
+                q_scale = jnp.asarray(1.0, dtype=q.dtype)
+
+            q_loss = q_loss_raw / q_scale
+            return q_loss, (q_loss_raw, q.mean(), q_scale)
+
+        (q_loss, (q_loss_raw, q_mean, q_scale)), q_action_grad = jax.value_and_grad(
+            q_objective, has_aux=True
+        )(actor_actions_raw)
+
+        # Adapt alpha using action-space gradient norms.  Both losses propagate
+        # through the same one-step actor, so this is a stable and inexpensive
+        # proxy for balancing their parameter-gradient contributions.
+        distill_action_grad = 2.0 * (actor_actions_raw - target_flow_actions) / actor_actions_raw.size
+        q_grad_norm = jnp.linalg.norm(q_action_grad)
+        distill_grad_norm = jnp.linalg.norm(distill_action_grad)
+        grad_eps = self.config.get('alpha_grad_eps', 1e-8)
+
+        if self.config.get('adaptive_alpha', True):
+            target_ratio = self.config.get('target_distill_q_grad_ratio', 1.0)
+            alpha_target = target_ratio * q_grad_norm / (distill_grad_norm + grad_eps)
+            alpha_target = jnp.clip(
+                alpha_target,
+                self.config.get('alpha_min', 0.01),
+                self.config.get('alpha_max', 1000.0),
+            )
+            alpha_decay = self.config.get('alpha_ema_decay', 0.99)
+            adaptive_alpha = alpha_decay * self.alpha + (1.0 - alpha_decay) * alpha_target
+            adaptive_alpha = jnp.clip(
+                adaptive_alpha,
+                self.config.get('alpha_min', 0.01),
+                self.config.get('alpha_max', 1000.0),
+            )
+            adaptive_alpha = jax.lax.stop_gradient(adaptive_alpha)
+        else:
+            alpha_target = jnp.asarray(self.config['alpha'], dtype=distill_loss.dtype)
+            adaptive_alpha = jnp.asarray(self.config['alpha'], dtype=distill_loss.dtype)
+
+        weighted_grad_ratio = adaptive_alpha * distill_grad_norm / (q_grad_norm + grad_eps)
+        grad_cosine = jnp.sum(q_action_grad * distill_action_grad) / (
+            q_grad_norm * distill_grad_norm + grad_eps
+        )
 
         # Total loss.
-        actor_loss = bc_flow_loss + va_flow_loss + self.config['alpha'] * distill_loss + q_loss
+        actor_loss = bc_flow_loss + va_flow_loss + adaptive_alpha * distill_loss + q_loss
 
         # Additional metrics for logging.
         actions = self.sample_actions(batch['observations'], seed=rng)
@@ -116,7 +166,15 @@ class DFQAgent(flax.struct.PyTreeNode):
             'va_flow_loss': va_flow_loss,
             'distill_loss': distill_loss,
             'q_loss': q_loss,
-            'q': q.mean(),
+            'q_loss_raw': q_loss_raw,
+            'q_scale': q_scale,
+            'q': q_mean,
+            'alpha': adaptive_alpha,
+            'alpha_target': alpha_target,
+            'q_action_grad_norm': q_grad_norm,
+            'distill_action_grad_norm': distill_grad_norm,
+            'weighted_distill_q_grad_ratio': weighted_grad_ratio,
+            'q_distill_grad_cosine': grad_cosine,
             'mse': mse,
             'data_action_rate': data_action_rate,
         }
@@ -161,7 +219,7 @@ class DFQAgent(flax.struct.PyTreeNode):
         self.target_update(new_network, 'critic')
         self.target_update(new_network, 'actor_va_flow')
 
-        return self.replace(network=new_network, rng=new_rng), info
+        return self.replace(network=new_network, alpha=info['actor/alpha'], rng=new_rng), info
 
     @jax.jit
     def sample_actions(
@@ -309,7 +367,12 @@ class DFQAgent(flax.struct.PyTreeNode):
 
         config['ob_dims'] = ob_dims
         config['action_dim'] = action_dim
-        return cls(rng, network=network, config=flax.core.FrozenDict(**config))
+        return cls(
+            rng,
+            network=network,
+            alpha=jnp.asarray(config['alpha'], dtype=jnp.float32),
+            config=flax.core.FrozenDict(**config),
+        )
 
 
 def get_config():
@@ -327,11 +390,18 @@ def get_config():
             discount=0.99,  # Discount factor.
             tau=0.005,  # Target network update rate.
             q_agg='mean',  # Aggregation method for target Q values.
-            alpha=10.0,  # BC coefficient (need to be tuned for each environment).
+            alpha=10.0,  # Fixed distillation coefficient when adaptive_alpha=False.
+            adaptive_alpha=True,  # Balance Q and distillation gradients automatically.
+            target_distill_q_grad_ratio=1.0,  # ||alpha * grad L_distill|| / ||grad L_Q||.
+            alpha_min=0.01,  # Lower bound for the adaptive distillation coefficient.
+            alpha_max=1000.0,  # Upper bound for the adaptive distillation coefficient.
+            alpha_ema_decay=0.99,  # Smooth batch-to-batch adaptive-alpha changes.
+            alpha_grad_eps=1e-8,
             candidate_num=4,
             va_temperature=0.5,
             flow_steps=10,  # Number of flow steps.
-            normalize_q_loss=False,  # Whether to normalize the Q loss.
+            normalize_q_loss=True,  # Whether to normalize the Q loss.
+            q_scale_min=1.0,  # Prevent excessive Q normalization near zero.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
         )
     )

@@ -1,6 +1,5 @@
 import os
 
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 os.environ['OGBENCH_DATA_DIR'] = '/mnt/data/user_workspace/zhouhongtu/ogbench_dataset'
 
 import json
@@ -96,7 +95,7 @@ def _run_single_seed(gpu_id, seed, cmd_args):
     """Run training for a single seed on a single GPU (subprocess target)."""
     env = os.environ.copy()
     env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-    env['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+    # env['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
     print(f'[GPU {gpu_id}] Starting seed={seed}: {" ".join(cmd_args)}', flush=True)
     proc = subprocess.run(cmd_args, env=env)
@@ -107,9 +106,13 @@ def _train():
     """Core training logic, called after FLAGS are parsed and agent config is set."""
     config = FLAGS.agent
     agent_name = config['agent_name']
-    alpha = config['alpha']
-    tempe = config['va_temperature']
-    exp_name = f'{agent_name}_{alpha}_{tempe}'
+    alpha = config.get('alpha')
+    tempe = config.get('va_temperature')
+    exp_name = agent_name
+    if alpha is not None:
+        exp_name += f'-alpha_{alpha}'
+    if tempe is not None:
+        exp_name += f'-tau_{tempe}'
 
     # Set up save directory: logs/env_name/agent_name/time/seed/
     time_str = FLAGS.time_str or datetime.now().strftime('%Y%m%d_%H%M%S')
