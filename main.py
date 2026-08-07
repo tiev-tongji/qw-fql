@@ -108,6 +108,8 @@ def _train():
     agent_name = config['agent_name']
     alpha = config.get('alpha')
     tempe = config.get('va_temperature')
+    if tempe is None:
+        tempe = config.get('eta_temperature')
     exp_name = agent_name
     if alpha is not None:
         exp_name += f'-alpha_{alpha}'
