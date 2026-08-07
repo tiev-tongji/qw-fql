@@ -400,7 +400,7 @@ def get_config():
             candidate_num=4,
             va_temperature=0.5,
             flow_steps=10,  # Number of flow steps.
-            normalize_q_loss=True,  # Whether to normalize the Q loss.
+            normalize_q_loss=False,  # Whether to normalize the Q loss.
             q_scale_min=1.0,  # Prevent excessive Q normalization near zero.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
         )

@@ -95,7 +95,8 @@ def _run_single_seed(gpu_id, seed, cmd_args):
     """Run training for a single seed on a single GPU (subprocess target)."""
     env = os.environ.copy()
     env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-    # env['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+    # Launcher 可能禁用了显存预分配以节省占用，训练子进程需恢复预分配。
+    env['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
 
     print(f'[GPU {gpu_id}] Starting seed={seed}: {" ".join(cmd_args)}', flush=True)
     proc = subprocess.run(cmd_args, env=env)
@@ -320,8 +321,8 @@ def main(_):
 
         # Build base command for each subprocess (without gpu_ids/seeds to avoid recursion).
         base_cmd = [sys.executable, os.path.abspath(sys.argv[0])]
-        # Generate shared time_str so all seeds go to the same directory.
-        shared_time_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # Shared time_str so all seeds go to the same directory (respect explicit --time_str).
+        shared_time_str = FLAGS.time_str or datetime.now().strftime('%Y%m%d_%H%M%S')
         base_cmd.append(f'--time_str={shared_time_str}')
         # Forward only explicitly set flags (not defaults) to avoid serialization issues.
         for flag_name in FLAGS:
